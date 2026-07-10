@@ -1,0 +1,22 @@
+[project]
+name = "kira"
+version = "0.1.0"
+description = "Кира — локальный голосовой ассистент для macOS (прототип)"
+requires-python = ">=3.11"
+dependencies = [
+    "ollama>=0.4.7",
+    "mlx-whisper>=0.4",
+    "sounddevice>=0.5",
+    "numpy",
+    "pyside6>=6.7",
+    "pysilero-vad>=3.4.0",
+    "pyobjc-framework-cocoa>=12.2.1",
+    "ddgs>=9.14.4",
+    "trafilatura>=2.1.0",
+    "torch>=2.13.0",
+    "num2words>=0.5.14",
+    "edge-tts>=7.2.8",
+]
+
+[tool.uv]
+package = false
