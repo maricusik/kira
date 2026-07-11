@@ -18,9 +18,8 @@ import threading
 
 from PySide6.QtCore import (QEasingCurve, QObject, QParallelAnimationGroup,
                             QPoint, QPropertyAnimation, Qt, QTimer, Signal)
-from PySide6.QtGui import (QAction, QBrush, QColor, QConicalGradient, QCursor,
-                           QIcon, QPainter, QPainterPath, QPen, QPixmap,
-                           QRadialGradient)
+from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QIcon, QPainter,
+                           QPainterPath, QPen, QPixmap, QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QMenu,
                                QScrollArea, QSystemTrayIcon, QVBoxLayout,
                                QWidget)
@@ -101,7 +100,10 @@ class Worker(QObject):
 
         while True:
             self.state.emit("idle")
-            audio = listen.record_phrase(on_level=self.level.emit)
+            # on_wake: Vosk услышал «Кира» прямо в потоке — свечение и панель
+            # включаются мгновенно, ещё до конца фразы
+            audio = listen.record_phrase(on_level=self.level.emit,
+                                         on_wake=self.awake.emit)
             if audio is None:
                 continue
             heard = listen.transcribe(audio)
@@ -224,23 +226,15 @@ class Orb(QWidget):
                       start, 100 * 16)
 
 
-# палитры свечения экрана по состояниям (переливаются по периметру)
-_GLOW_PALETTES = {
-    "listening": [(60, 190, 255), (170, 120, 255), (255, 110, 180)],
-    "thinking": [(170, 120, 255), (120, 80, 255), (255, 110, 180)],
-    "speaking": [(60, 230, 180), (60, 190, 255), (170, 120, 255)],
-}
-
-
 class ScreenGlow(QWidget):
-    """Свечение по краям всего экрана, как у Apple Intelligence.
+    """Зелёное свечение по краям всего экрана.
 
-    Разгорается, когда Кира услышала имя, пульсирует от голоса, переливается
-    по периметру и гаснет после ответа. Окно прозрачно для кликов — работе
-    оно не мешает.
+    Загорается в момент, когда прозвучало имя «Кира», дышит и пульсирует
+    от голоса, гаснет после ответа. Единый плавный градиент от края внутрь,
+    без видимых полос. Окно прозрачно для кликов — работе оно не мешает.
     """
 
-    LAYERS = 6
+    COLOR = QColor(52, 224, 130)  # зелёный
 
     def __init__(self):
         super().__init__()
@@ -255,7 +249,6 @@ class ScreenGlow(QWidget):
         self._target_level = 0.0
         self._intensity = 0.0    # 0..1, плавное разгорание/угасание
         self._target = 0.0
-        self._palette = _GLOW_PALETTES["listening"]
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 
@@ -274,14 +267,12 @@ class ScreenGlow(QWidget):
     def set_state(self, state: str) -> None:
         if state == "idle":
             self.hide_glow()
-        else:
-            self._palette = _GLOW_PALETTES.get(state, self._palette)
 
     def set_level(self, level: float) -> None:
         self._target_level = level
 
     def _tick(self) -> None:
-        self._phase += 0.015
+        self._phase += 0.06
         self._intensity += (self._target - self._intensity) * 0.12
         self._level += (self._target_level - self._level) * 0.25
         if self._target == 0.0 and self._intensity < 0.02:
@@ -293,29 +284,35 @@ class ScreenGlow(QWidget):
     def paintEvent(self, event) -> None:
         if self._intensity <= 0.01:
             return
+        from PySide6.QtGui import QLinearGradient
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        rect = self.rect()
-        breath = 0.5 + 0.5 * math.sin(self._phase * 3)
-        thickness = (26 + 26 * self._level + 8 * breath) * self._intensity
+        w, h = self.width(), self.height()
+        breath = 0.5 + 0.5 * math.sin(self._phase)
+        thick = int((34 + 40 * self._level + 12 * breath) * self._intensity)
+        if thick < 2:
+            return
+        edge = QColor(self.COLOR)
+        edge.setAlpha(int(200 * self._intensity))
+        clear = QColor(self.COLOR)
+        clear.setAlpha(0)
 
-        colors = self._palette
-        for i in range(self.LAYERS):
-            t = i / self.LAYERS
-            alpha = int(self._intensity * (1 - t) ** 2 * 190)
-            if alpha <= 2:
-                continue
-            grad = QConicalGradient(rect.center(), -self._phase * 57)
-            n = len(colors)
-            for j, (r, g, b) in enumerate(colors + colors[:1]):
-                grad.setColorAt(j / n, QColor(r, g, b, alpha))
-            pen = QPen(QBrush(grad), max(2.0, thickness / self.LAYERS * 2.2))
-            p.setPen(pen)
-            p.setBrush(Qt.NoBrush)
-            inset = int(t * thickness)
-            radius = 18 + inset
-            p.drawRoundedRect(rect.adjusted(inset + 1, inset + 1, -inset - 1, -inset - 1),
-                              radius, radius)
+        def bar(x, y, bw, bh, x2, y2):
+            grad = QLinearGradient(x, y, x2, y2)
+            grad.setColorAt(0.0, edge)
+            grad.setColorAt(1.0, clear)
+            p.fillRect(x, y, bw, bh, QBrush(grad))
+
+        bar(0, 0, w, thick, 0, thick)              # верх
+        # у нижней и правой полос градиент идёт от края внутрь
+        grad = QLinearGradient(0, h, 0, h - thick)
+        grad.setColorAt(0.0, edge)
+        grad.setColorAt(1.0, clear)
+        p.fillRect(0, h - thick, w, thick, QBrush(grad))
+        bar(0, 0, thick, h, thick, 0)              # лево
+        grad = QLinearGradient(w, 0, w - thick, 0)
+        grad.setColorAt(0.0, edge)
+        grad.setColorAt(1.0, clear)
+        p.fillRect(w - thick, 0, thick, h, QBrush(grad))  # право
 
 
 class KiraWindow(QWidget):

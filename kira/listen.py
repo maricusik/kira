@@ -38,6 +38,10 @@ MAX_PHRASE = 30.0             # сек, предохранитель
 PREROLL = 0.6                 # сек звука до срабатывания VAD (тихое начало слова)
 
 _vad = None
+_vosk_model = None
+
+VOSK_MODEL_DIR = os.path.expanduser("~/.cache/kira/vosk-model-small-ru-0.22")
+VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip"
 
 
 def _get_vad():
@@ -48,18 +52,49 @@ def _get_vad():
     return _vad
 
 
+def _get_vosk():
+    """Vosk для мгновенного детекта имени в потоке (грамматика из одного слова)."""
+    global _vosk_model
+    if _vosk_model is None:
+        try:
+            from vosk import Model, SetLogLevel
+            SetLogLevel(-1)
+            if not os.path.isdir(VOSK_MODEL_DIR):
+                import io
+                import urllib.request
+                import zipfile
+                os.makedirs(os.path.dirname(VOSK_MODEL_DIR), exist_ok=True)
+                with urllib.request.urlopen(VOSK_URL, timeout=120) as f:
+                    zipfile.ZipFile(io.BytesIO(f.read())).extractall(
+                        os.path.dirname(VOSK_MODEL_DIR))
+            _vosk_model = Model(VOSK_MODEL_DIR)
+        except Exception:
+            _vosk_model = False  # без vosk просто нет мгновенной реакции
+    return _vosk_model or None
+
+
 def _debug(msg: str) -> None:
     if os.environ.get("KIRA_DEBUG"):
         print(f"[listen] {msg}", flush=True)
 
 
-def record_phrase(on_level: Callable[[float], None] | None = None) -> np.ndarray | None:
+def record_phrase(on_level: Callable[[float], None] | None = None,
+                  on_wake: Callable[[], None] | None = None) -> np.ndarray | None:
     """Записать одну фразу с микрофона. Возвращает float32 16kHz mono или None.
 
     on_level, если задан, получает громкость 0..1 каждые ~30 мс — для анимации UI.
+    on_wake вызывается СРАЗУ, как только в потоке речи прозвучало «Кира»
+    (Vosk слушает параллельно с записью), не дожидаясь конца фразы.
     """
     vad = _get_vad()
     vad.reset()
+    wake_rec = None
+    if on_wake is not None and (vosk_model := _get_vosk()) is not None:
+        from vosk import KaldiRecognizer
+        # без грамматики: с ней Vosk молчит до конца фразы, а свободный режим
+        # стримит догадки на лету; точную проверку всё равно делает Whisper
+        wake_rec = KaldiRecognizer(vosk_model, TARGET_SR)
+    wake_fired = False
     audio_q: queue.Queue[np.ndarray] = queue.Queue()
 
     def callback(indata, frames, time_info, status):
@@ -83,7 +118,17 @@ def record_phrase(on_level: Callable[[float], None] | None = None) -> np.ndarray
                 frame, ring = ring[:FRAME], ring[FRAME:]
                 if on_level:
                     on_level(min(1.0, float(np.sqrt(np.mean(frame ** 2))) / 0.15))
-                prob = vad.process_chunk((frame * 32767).astype(np.int16).tobytes())
+                int16 = (frame * 32767).astype(np.int16).tobytes()
+                if wake_rec is not None and not wake_fired:
+                    import json
+                    if wake_rec.AcceptWaveform(int16):
+                        heard = json.loads(wake_rec.Result()).get("text", "")
+                    else:
+                        heard = json.loads(wake_rec.PartialResult()).get("partial", "")
+                    if re.search(r"\bки[рнл]", heard):
+                        wake_fired = True
+                        on_wake()
+                prob = vad.process_chunk(int16)
                 speech = prob >= VAD_THRESHOLD
 
                 if not speech_started:
@@ -135,8 +180,9 @@ def extract_command(text: str) -> str | None:
 
 
 def warm_up() -> None:
-    """Прогреть Whisper и VAD, чтобы первая настоящая фраза не тормозила."""
+    """Прогреть Whisper, VAD и Vosk, чтобы первая настоящая фраза не тормозила."""
     _get_vad()
+    _get_vosk()
     transcribe(np.zeros(TARGET_SR, dtype=np.float32))
 
 

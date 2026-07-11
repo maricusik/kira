@@ -16,6 +16,7 @@ dependencies = [
     "torch>=2.13.0",
     "num2words>=0.5.14",
     "edge-tts>=7.2.8",
+    "vosk==0.3.44",
 ]
 
 [tool.uv]
