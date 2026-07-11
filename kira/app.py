@@ -285,15 +285,22 @@ class ScreenGlow(QWidget):
         if self._intensity <= 0.01:
             return
         p = QPainter(self)
-        w, h = self.width(), self.height()
-        # тонкая однотонная рамка; слегка утолщается от голоса
-        thick = max(2, int((7 + 5 * self._level) * self._intensity))
-        color = QColor(self.COLOR)
+        p.setRenderHint(QPainter.Antialiasing)
+        # тонкая однотонная рамка: «дышит» толщиной и чуть мерцает яркостью,
+        # от голоса становится плотнее
+        breath = math.sin(self._phase)
+        thick = max(2.0, (7 + 5 * self._level + 2 * breath) * self._intensity)
+        color = QColor(self.COLOR).lighter(100 + int(14 * (0.5 + 0.5 * math.sin(self._phase * 1.3))))
         color.setAlpha(int(255 * self._intensity))  # прозрачность только на фейдах
-        p.fillRect(0, 0, w, thick, color)               # верх
-        p.fillRect(0, h - thick, w, thick, color)       # низ
-        p.fillRect(0, 0, thick, h, color)               # лево
-        p.fillRect(w - thick, 0, thick, h, color)       # право
+        pen = QPen(color, thick)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        inset = thick / 2
+        radius = 20 + inset  # скругление в тон углам экрана мака
+        p.drawRoundedRect(self.rect().adjusted(int(inset), int(inset),
+                                               -int(inset), -int(inset)),
+                          radius, radius)
 
 
 class KiraWindow(QWidget):
