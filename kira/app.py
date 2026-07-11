@@ -248,18 +248,20 @@ def _detect_notch() -> tuple[float, float, float] | None:
         return None
 
 
-class ScreenGlow(QWidget):
-    """Бегущая зелёная «комета» по краям экрана.
+class NotchIsland(QWidget):
+    """«Динамический остров» вокруг чёлки, как на iPhone.
 
-    Загорается, когда прозвучало имя «Кира»: яркий сегмент с тающим хвостом
-    скользит по периметру, огибая скруглённые углы экрана и чёлку (notch)
-    новых макбуков. Гаснет после ответа. Окно прозрачно для кликов.
+    Услышав «Кира», из чёлки плавно вырастает чёрная капсула с живой
+    зелёной звуковой волной: слушает — волна дышит от голоса, думает —
+    мягко перекатывается, говорит — танцует. После ответа капсула
+    втягивается обратно. На маках без чёлки — та же капсула, свисающая
+    из-под верхнего края экрана. Окно прозрачно для кликов.
     """
 
     COLOR = QColor(52, 224, 130)   # зелёный
-    RADIUS = int(os.environ.get("KIRA_GLOW_RADIUS", "24"))  # радиус углов экрана
-    TAIL = 0.20                    # длина хвоста кометы, доля периметра
-    SPEED = 1400                   # пикселей в секунду
+    BARS = 21                      # столбиков в звуковой волне
+    GROW_W = 130                   # на сколько капсула шире чёлки (с каждой стороны)
+    GROW_H = 38                    # высота полосы с волной под чёлкой
 
     def __init__(self):
         super().__init__()
@@ -268,25 +270,37 @@ class ScreenGlow(QWidget):
                             | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setGeometry(QApplication.primaryScreen().geometry())
+        self._notch = _detect_notch()
+        self._place()
         self._phase = 0.0
         self._level = 0.0        # сглаженная громкость голоса
         self._target_level = 0.0
-        self._intensity = 0.0    # 0..1, плавное разгорание/угасание
+        self._expand = 0.0       # 0..1, раскрытие капсулы
         self._target = 0.0
-        self._notch = _detect_notch()
+        self._mode = "listening"
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 
+    def _place(self) -> None:
+        """Окно — полоса сверху по центру экрана, вокруг чёлки."""
+        screen = QApplication.primaryScreen().geometry()
+        w = int((self._notch[1] - self._notch[0] if self._notch else 190)
+                + self.GROW_W * 2 + 60)
+        cx = int((self._notch[0] + self._notch[1]) / 2) if self._notch \
+            else screen.center().x()
+        self.setGeometry(cx - w // 2, screen.top(), w,
+                         int((self._notch[2] if self._notch else 0) + self.GROW_H + 26))
+
+    # интерфейс совместим с прежним ScreenGlow — сигналы не переподключаем
     def show_glow(self) -> None:
         self._target = 1.0
         if not self.isVisible():
-            self.setGeometry(QApplication.primaryScreen().geometry())
             self._notch = _detect_notch()
+            self._place()
             self.show()
         self.raise_()
         if not self._timer.isActive():
-            self._timer.start(40)
+            self._timer.start(33)
 
     def hide_glow(self) -> None:
         self._target = 0.0
@@ -294,93 +308,85 @@ class ScreenGlow(QWidget):
     def set_state(self, state: str) -> None:
         if state == "idle":
             self.hide_glow()
+        else:
+            self._mode = state
 
     def set_level(self, level: float) -> None:
         self._target_level = level
 
     def _tick(self) -> None:
-        # позиция бегущего сегмента, в пикселях пути (голос слегка ускоряет)
-        self._phase += self.SPEED * 0.04 * (0.7 + 0.6 * self._level)
-        self._intensity += (self._target - self._intensity) * 0.12
-        self._level += (self._target_level - self._level) * 0.25
-        if self._target == 0.0 and self._intensity < 0.02:
+        self._phase += 0.14
+        self._expand += (self._target - self._expand) * 0.16
+        self._level += (self._target_level - self._level) * 0.3
+        if self._target == 0.0 and self._expand < 0.02:
             self._timer.stop()
             self.hide()
             return
         self.update()
 
-    def _edge_path(self, inset: float) -> QPainterPath:
-        """Контур края экрана: скруглённые углы + объезд чёлки, если она есть."""
-        rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
-        r = self.RADIUS
-        x0, y0, x1, y1 = rect.left(), rect.top(), rect.right(), rect.bottom()
-        path = QPainterPath()
-        path.moveTo(x0 + r, y0)
-        if self._notch:
-            nl, nr, nh = self._notch
-            nb = nh + 3       # низ чёлки чуть с запасом
-            c = 9             # скругление её углов
-            path.lineTo(nl - c, y0)
-            path.quadTo(nl, y0, nl, y0 + c)
-            path.lineTo(nl, nb - c)
-            path.quadTo(nl, nb, nl + c, nb)
-            path.lineTo(nr - c, nb)
-            path.quadTo(nr, nb, nr, nb - c)
-            path.lineTo(nr, y0 + c)
-            path.quadTo(nr, y0, nr + c, y0)
-        path.lineTo(x1 - r, y0)
-        path.arcTo(x1 - 2 * r, y0, 2 * r, 2 * r, 90, -90)      # правый верх
-        path.lineTo(x1, y1 - r)
-        path.arcTo(x1 - 2 * r, y1 - 2 * r, 2 * r, 2 * r, 0, -90)   # правый низ
-        path.lineTo(x0 + r, y1)
-        path.arcTo(x0, y1 - 2 * r, 2 * r, 2 * r, 270, -90)     # левый низ
-        path.lineTo(x0, y0 + r)
-        path.arcTo(x0, y0, 2 * r, 2 * r, 180, -90)             # левый верх
-        path.closeSubpath()
-        return path
+    def _bar_amp(self, i: int) -> float:
+        """Амплитуда столбика волны 0..1 в зависимости от состояния."""
+        center = 1.0 - abs(i - (self.BARS - 1) / 2) / ((self.BARS - 1) / 2)  # купол
+        if self._mode == "thinking":
+            return 0.25 + 0.3 * (0.5 + 0.5 * math.sin(self._phase * 0.7 + i * 0.55))
+        if self._mode == "speaking":
+            wave = abs(math.sin(self._phase * 1.1 + i * 0.9)) \
+                * abs(math.sin(self._phase * 0.37 + i * 0.23))
+            return 0.15 + 0.85 * wave * (0.45 + 0.55 * center)
+        # listening: волна дышит от громкости голоса
+        wave = abs(math.sin(self._phase + i * 0.8))
+        return 0.12 + (0.25 + 1.6 * self._level) * wave * center
 
     def paintEvent(self, event) -> None:
-        if self._intensity <= 0.01:
+        if self._expand <= 0.02:
             return
+        k = self._expand * self._expand * (3 - 2 * self._expand)  # smoothstep
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        thick = max(2.0, (7 + 5 * self._level) * self._intensity)
-        path = self._edge_path(thick / 2 + 1)
-        total = path.length()
+        w, h = self.width(), self.height()
 
-        # тонкая приглушённая окантовка по всему контуру
-        base = QColor(self.COLOR)
-        base.setAlpha(int(50 * self._intensity))
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(base, max(1.5, thick * 0.4)))
+        if self._notch:
+            notch_w = self._notch[1] - self._notch[0]
+            notch_h = self._notch[2]
+        else:
+            notch_w, notch_h = 190, 0
+        pill_w = notch_w + 12 + 2 * self.GROW_W * k
+        pill_h = notch_h + 2 + self.GROW_H * k
+        x = (w - pill_w) / 2
+        r = min(20.0, pill_h * 0.45)
+
+        # капсула: прямые верхние углы (прижата к краю экрана), круглые нижние
+        path = QPainterPath()
+        path.moveTo(x, 0)
+        path.lineTo(x, pill_h - r)
+        path.quadTo(x, pill_h, x + r, pill_h)
+        path.lineTo(x + pill_w - r, pill_h)
+        path.quadTo(x + pill_w, pill_h, x + pill_w, pill_h - r)
+        path.lineTo(x + pill_w, 0)
+        path.closeSubpath()
+        p.setPen(QPen(QColor(255, 255, 255, int(28 * k)), 1))
+        p.setBrush(QBrush(QColor(8, 8, 10, int(245 * k))))
         p.drawPath(path)
 
-        # комета: голова яркая, хвост тает по прозрачности и толщине
-        head = self._phase % total
-        tail_px = total * self.TAIL
-        step = 9.0  # шаг сэмплирования пути, px — мельче шаг = глаже углы
-        n = max(12, int(tail_px / step))
-        points = [path.pointAtPercent((((head - i * step) % total) / total))
-                  for i in range(n)]
-        for i in range(n - 1):
-            k = 1.0 - i / n
-            alpha = int(255 * self._intensity * k ** 1.7)
-            if alpha <= 3:
-                break
-            color = QColor(self.COLOR)
-            color.setAlpha(alpha)
-            pen = QPen(color, thick * (0.35 + 0.65 * k))
-            pen.setCapStyle(Qt.RoundCap)
-            p.setPen(pen)
-            p.drawLine(points[i], points[i + 1])
-
-        # светлое ядро на носу кометы
-        head_color = QColor(self.COLOR).lighter(135)
-        head_color.setAlpha(int(255 * self._intensity))
+        if k < 0.45:  # волну показываем, когда капсула почти раскрылась
+            return
+        strip_top = notch_h + 4
+        strip_h = pill_h - strip_top - 7
+        if strip_h < 8:
+            return
+        bar_zone = pill_w - 56
+        gap = bar_zone / self.BARS
+        bw = max(3.0, gap * 0.45)
+        color = QColor(self.COLOR)
+        color.setAlpha(int(255 * k))
         p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(head_color))
-        hr = thick * 0.7
-        p.drawEllipse(points[0], hr, hr)
+        p.setBrush(QBrush(color))
+        for i in range(self.BARS):
+            amp = max(0.08, min(1.0, self._bar_amp(i)))
+            bh = strip_h * amp
+            bx = x + 28 + i * gap + (gap - bw) / 2
+            by = strip_top + (strip_h - bh) / 2
+            p.drawRoundedRect(QRectF(bx, by, bw, bh), bw / 2, bw / 2)
 
 
 class KiraWindow(QWidget):
@@ -468,8 +474,8 @@ class KiraWindow(QWidget):
         self.worker.awake.connect(self.slide_in)
         self.worker.done.connect(lambda: self._hide_timer.start(self.HIDE_AFTER_MS))
 
-        # свечение по краям экрана: загорается на имя «Кира»
-        self.glow = ScreenGlow()
+        # «динамический остров» вокруг чёлки: раскрывается на имя «Кира»
+        self.glow = NotchIsland()
         self.worker.awake.connect(self.glow.show_glow)
         self.worker.state.connect(self.glow.set_state)
         self.worker.level.connect(self.glow.set_level)
