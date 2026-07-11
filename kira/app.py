@@ -14,6 +14,7 @@
 """
 
 import math
+import os
 import threading
 
 from PySide6.QtCore import (QEasingCurve, QObject, QParallelAnimationGroup,
@@ -227,14 +228,17 @@ class Orb(QWidget):
 
 
 class ScreenGlow(QWidget):
-    """Зелёное свечение по краям всего экрана.
+    """Бегущая зелёная полоса по краям экрана.
 
-    Загорается в момент, когда прозвучало имя «Кира», дышит и пульсирует
-    от голоса, гаснет после ответа. Единый плавный градиент от края внутрь,
-    без видимых полос. Окно прозрачно для кликов — работе оно не мешает.
+    Загорается, когда прозвучало имя «Кира»: яркий сегмент скользит по
+    периметру, огибая скруглённые углы экрана макбука, позади — тонкая
+    приглушённая окантовка. Гаснет после ответа. Окно прозрачно для кликов.
     """
 
-    COLOR = QColor(52, 224, 130)  # зелёный
+    COLOR = QColor(52, 224, 130)   # зелёный
+    RADIUS = int(os.environ.get("KIRA_GLOW_RADIUS", "24"))  # радиус углов экрана
+    SEGMENT = 0.18                 # длина бегущего сегмента, доля периметра
+    SPEED = 1400                   # пикселей в секунду
 
     def __init__(self):
         super().__init__()
@@ -272,7 +276,8 @@ class ScreenGlow(QWidget):
         self._target_level = level
 
     def _tick(self) -> None:
-        self._phase += 0.06
+        # позиция бегущего сегмента, в пикселях пути (голос слегка ускоряет)
+        self._phase += self.SPEED * 0.04 * (0.7 + 0.6 * self._level)
         self._intensity += (self._target - self._intensity) * 0.12
         self._level += (self._target_level - self._level) * 0.25
         if self._target == 0.0 and self._intensity < 0.02:
@@ -286,21 +291,30 @@ class ScreenGlow(QWidget):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        # тонкая однотонная рамка: «дышит» толщиной и чуть мерцает яркостью,
-        # от голоса становится плотнее
-        breath = math.sin(self._phase)
-        thick = max(2.0, (7 + 5 * self._level + 2 * breath) * self._intensity)
-        color = QColor(self.COLOR).lighter(100 + int(14 * (0.5 + 0.5 * math.sin(self._phase * 1.3))))
-        color.setAlpha(int(255 * self._intensity))  # прозрачность только на фейдах
-        pen = QPen(color, thick)
-        pen.setJoinStyle(Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
+        thick = max(2.0, (7 + 5 * self._level) * self._intensity)
         inset = thick / 2
-        radius = 20 + inset  # скругление в тон углам экрана мака
-        p.drawRoundedRect(self.rect().adjusted(int(inset), int(inset),
-                                               -int(inset), -int(inset)),
-                          radius, radius)
+        rect = self.rect().adjusted(int(inset), int(inset), -int(inset), -int(inset))
+        radius = self.RADIUS
+        perimeter = 2 * (rect.width() + rect.height()) - 8 * radius + 2 * math.pi * radius
+
+        # тонкая приглушённая окантовка по всему периметру
+        base = QColor(self.COLOR)
+        base.setAlpha(int(60 * self._intensity))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(base, max(1.5, thick * 0.5)))
+        p.drawRoundedRect(rect, radius, radius)
+
+        # бегущий сегмент: штрих контура с анимированным смещением —
+        # он честно огибает скруглённые углы экрана
+        color = QColor(self.COLOR)
+        color.setAlpha(int(255 * self._intensity))
+        pen = QPen(color, thick)
+        pen.setCapStyle(Qt.RoundCap)
+        seg = perimeter * self.SEGMENT
+        pen.setDashPattern([seg / thick, (perimeter - seg) / thick])
+        pen.setDashOffset((self._phase % perimeter) / thick)
+        p.setPen(pen)
+        p.drawRoundedRect(rect, radius, radius)
 
 
 class KiraWindow(QWidget):
