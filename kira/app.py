@@ -284,35 +284,16 @@ class ScreenGlow(QWidget):
     def paintEvent(self, event) -> None:
         if self._intensity <= 0.01:
             return
-        from PySide6.QtGui import QLinearGradient
         p = QPainter(self)
         w, h = self.width(), self.height()
-        breath = 0.5 + 0.5 * math.sin(self._phase)
-        thick = int((34 + 40 * self._level + 12 * breath) * self._intensity)
-        if thick < 2:
-            return
-        edge = QColor(self.COLOR)
-        edge.setAlpha(int(200 * self._intensity))
-        clear = QColor(self.COLOR)
-        clear.setAlpha(0)
-
-        def bar(x, y, bw, bh, x2, y2):
-            grad = QLinearGradient(x, y, x2, y2)
-            grad.setColorAt(0.0, edge)
-            grad.setColorAt(1.0, clear)
-            p.fillRect(x, y, bw, bh, QBrush(grad))
-
-        bar(0, 0, w, thick, 0, thick)              # верх
-        # у нижней и правой полос градиент идёт от края внутрь
-        grad = QLinearGradient(0, h, 0, h - thick)
-        grad.setColorAt(0.0, edge)
-        grad.setColorAt(1.0, clear)
-        p.fillRect(0, h - thick, w, thick, QBrush(grad))
-        bar(0, 0, thick, h, thick, 0)              # лево
-        grad = QLinearGradient(w, 0, w - thick, 0)
-        grad.setColorAt(0.0, edge)
-        grad.setColorAt(1.0, clear)
-        p.fillRect(w - thick, 0, thick, h, QBrush(grad))  # право
+        # тонкая однотонная рамка; слегка утолщается от голоса
+        thick = max(2, int((7 + 5 * self._level) * self._intensity))
+        color = QColor(self.COLOR)
+        color.setAlpha(int(255 * self._intensity))  # прозрачность только на фейдах
+        p.fillRect(0, 0, w, thick, color)               # верх
+        p.fillRect(0, h - thick, w, thick, color)       # низ
+        p.fillRect(0, 0, thick, h, color)               # лево
+        p.fillRect(w - thick, 0, thick, h, color)       # право
 
 
 class KiraWindow(QWidget):
