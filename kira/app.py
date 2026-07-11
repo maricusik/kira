@@ -259,9 +259,9 @@ class NotchIsland(QWidget):
     """
 
     COLOR = QColor(52, 224, 130)   # зелёный
-    BARS = 21                      # столбиков в звуковой волне
-    GROW_W = 130                   # на сколько капсула шире чёлки (с каждой стороны)
-    GROW_H = 38                    # высота полосы с волной под чёлкой
+    BARS = 17                      # столбиков в звуковой волне
+    GROW_W = 64                    # на сколько капсула шире чёлки (с каждой стороны)
+    GROW_H = 42                    # высота полосы с волной под чёлкой
 
     def __init__(self):
         super().__init__()
@@ -270,6 +270,7 @@ class NotchIsland(QWidget):
                             | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setWindowTitle("kira-notch-island")  # чтобы найти NSWindow для _elevate
         self._notch = _detect_notch()
         self._place()
         self._phase = 0.0
@@ -291,6 +292,26 @@ class NotchIsland(QWidget):
         self.setGeometry(cx - w // 2, screen.top(), w,
                          int((self._notch[2] if self._notch else 0) + self.GROW_H + 26))
 
+    def _elevate(self) -> None:
+        """Поднять окно НАД строкой меню.
+
+        Qt-окна macOS не пускает в зону менюбара — капсула повисала под ним.
+        Через AppKit ставим окну уровень всплывающего меню и возвращаем
+        на место, вплотную к чёлке.
+        """
+        try:
+            from AppKit import NSApp
+            for w in NSApp.windows():
+                if str(w.title()) == "kira-notch-island":
+                    w.setLevel_(101)  # NSPopUpMenuWindowLevel — выше менюбара
+                    # на всех рабочих столах и в fullscreen-пространствах
+                    w.setCollectionBehavior_(w.collectionBehavior() | 1 | 16 | 256)
+                    break
+        except Exception:
+            pass
+        screen = QApplication.primaryScreen().geometry()
+        self.move(self.x(), screen.top())
+
     # интерфейс совместим с прежним ScreenGlow — сигналы не переподключаем
     def show_glow(self) -> None:
         self._target = 1.0
@@ -298,6 +319,7 @@ class NotchIsland(QWidget):
             self._notch = _detect_notch()
             self._place()
             self.show()
+            self._elevate()
         self.raise_()
         if not self._timer.isActive():
             self._timer.start(33)
@@ -335,7 +357,7 @@ class NotchIsland(QWidget):
             return 0.15 + 0.85 * wave * (0.45 + 0.55 * center)
         # listening: волна дышит от громкости голоса
         wave = abs(math.sin(self._phase + i * 0.8))
-        return 0.12 + (0.25 + 1.6 * self._level) * wave * center
+        return 0.2 + (0.35 + 1.5 * self._level) * wave * (0.35 + 0.65 * center)
 
     def paintEvent(self, event) -> None:
         if self._expand <= 0.02:
@@ -374,9 +396,9 @@ class NotchIsland(QWidget):
         strip_h = pill_h - strip_top - 7
         if strip_h < 8:
             return
-        bar_zone = pill_w - 56
+        bar_zone = pill_w - 52
         gap = bar_zone / self.BARS
-        bw = max(3.0, gap * 0.45)
+        bw = max(4.0, gap * 0.55)
         color = QColor(self.COLOR)
         color.setAlpha(int(255 * k))
         p.setPen(Qt.NoPen)
@@ -731,4 +753,7 @@ def run_app(model: str = agent.DEFAULT_MODEL, think: bool = True) -> None:
     # показать панель при старте (когда позиция иконки уже известна)
     QTimer.singleShot(1600, window.slide_in)
     QTimer.singleShot(1600, lambda: window._hide_timer.start(KiraWindow.HIDE_AFTER_MS))
+    if os.environ.get("KIRA_ISLAND_DEMO"):  # показать капсулу без wake word (отладка)
+        QTimer.singleShot(2000, window.glow.show_glow)
+        QTimer.singleShot(12000, window.glow.hide_glow)
     sys.exit(app.exec())
