@@ -18,7 +18,8 @@ import os
 import threading
 
 from PySide6.QtCore import (QEasingCurve, QObject, QParallelAnimationGroup,
-                            QPoint, QPropertyAnimation, Qt, QTimer, Signal)
+                            QPoint, QPointF, QPropertyAnimation, QRectF, Qt,
+                            QTimer, Signal)
 from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QIcon, QPainter,
                            QPainterPath, QPen, QPixmap, QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QMenu,
@@ -227,17 +228,37 @@ class Orb(QWidget):
                       start, 100 * 16)
 
 
-class ScreenGlow(QWidget):
-    """Бегущая зелёная полоса по краям экрана.
+def _detect_notch() -> tuple[float, float, float] | None:
+    """Положение чёлки (notch) экрана: (левый x, правый x, высота) или None.
 
-    Загорается, когда прозвучало имя «Кира»: яркий сегмент скользит по
-    периметру, огибая скруглённые углы экрана макбука, позади — тонкая
-    приглушённая окантовка. Гаснет после ответа. Окно прозрачно для кликов.
+    macOS отдаёт безопасные зоны через NSScreen: safeAreaInsets.top > 0
+    значит чёлка есть, а auxiliaryTop*Area дают области по бокам от неё.
+    """
+    try:
+        from AppKit import NSScreen
+        screen = NSScreen.screens()[0]
+        top = float(screen.safeAreaInsets().top)
+        if top <= 0:
+            return None
+        width = float(screen.frame().size.width)
+        left = float(screen.auxiliaryTopLeftArea().size.width)
+        right = width - float(screen.auxiliaryTopRightArea().size.width)
+        return (left, right, top)
+    except Exception:
+        return None
+
+
+class ScreenGlow(QWidget):
+    """Бегущая зелёная «комета» по краям экрана.
+
+    Загорается, когда прозвучало имя «Кира»: яркий сегмент с тающим хвостом
+    скользит по периметру, огибая скруглённые углы экрана и чёлку (notch)
+    новых макбуков. Гаснет после ответа. Окно прозрачно для кликов.
     """
 
     COLOR = QColor(52, 224, 130)   # зелёный
     RADIUS = int(os.environ.get("KIRA_GLOW_RADIUS", "24"))  # радиус углов экрана
-    SEGMENT = 0.18                 # длина бегущего сегмента, доля периметра
+    TAIL = 0.20                    # длина хвоста кометы, доля периметра
     SPEED = 1400                   # пикселей в секунду
 
     def __init__(self):
@@ -253,6 +274,7 @@ class ScreenGlow(QWidget):
         self._target_level = 0.0
         self._intensity = 0.0    # 0..1, плавное разгорание/угасание
         self._target = 0.0
+        self._notch = _detect_notch()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
 
@@ -260,6 +282,7 @@ class ScreenGlow(QWidget):
         self._target = 1.0
         if not self.isVisible():
             self.setGeometry(QApplication.primaryScreen().geometry())
+            self._notch = _detect_notch()
             self.show()
         self.raise_()
         if not self._timer.isActive():
@@ -286,35 +309,78 @@ class ScreenGlow(QWidget):
             return
         self.update()
 
+    def _edge_path(self, inset: float) -> QPainterPath:
+        """Контур края экрана: скруглённые углы + объезд чёлки, если она есть."""
+        rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+        r = self.RADIUS
+        x0, y0, x1, y1 = rect.left(), rect.top(), rect.right(), rect.bottom()
+        path = QPainterPath()
+        path.moveTo(x0 + r, y0)
+        if self._notch:
+            nl, nr, nh = self._notch
+            nb = nh + 3       # низ чёлки чуть с запасом
+            c = 9             # скругление её углов
+            path.lineTo(nl - c, y0)
+            path.quadTo(nl, y0, nl, y0 + c)
+            path.lineTo(nl, nb - c)
+            path.quadTo(nl, nb, nl + c, nb)
+            path.lineTo(nr - c, nb)
+            path.quadTo(nr, nb, nr, nb - c)
+            path.lineTo(nr, y0 + c)
+            path.quadTo(nr, y0, nr + c, y0)
+        path.lineTo(x1 - r, y0)
+        path.arcTo(x1 - 2 * r, y0, 2 * r, 2 * r, 90, -90)      # правый верх
+        path.lineTo(x1, y1 - r)
+        path.arcTo(x1 - 2 * r, y1 - 2 * r, 2 * r, 2 * r, 0, -90)   # правый низ
+        path.lineTo(x0 + r, y1)
+        path.arcTo(x0, y1 - 2 * r, 2 * r, 2 * r, 270, -90)     # левый низ
+        path.lineTo(x0, y0 + r)
+        path.arcTo(x0, y0, 2 * r, 2 * r, 180, -90)             # левый верх
+        path.closeSubpath()
+        return path
+
     def paintEvent(self, event) -> None:
         if self._intensity <= 0.01:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         thick = max(2.0, (7 + 5 * self._level) * self._intensity)
-        inset = thick / 2
-        rect = self.rect().adjusted(int(inset), int(inset), -int(inset), -int(inset))
-        radius = self.RADIUS
-        perimeter = 2 * (rect.width() + rect.height()) - 8 * radius + 2 * math.pi * radius
+        path = self._edge_path(thick / 2 + 1)
+        total = path.length()
 
-        # тонкая приглушённая окантовка по всему периметру
+        # тонкая приглушённая окантовка по всему контуру
         base = QColor(self.COLOR)
-        base.setAlpha(int(60 * self._intensity))
+        base.setAlpha(int(50 * self._intensity))
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(base, max(1.5, thick * 0.5)))
-        p.drawRoundedRect(rect, radius, radius)
+        p.setPen(QPen(base, max(1.5, thick * 0.4)))
+        p.drawPath(path)
 
-        # бегущий сегмент: штрих контура с анимированным смещением —
-        # он честно огибает скруглённые углы экрана
-        color = QColor(self.COLOR)
-        color.setAlpha(int(255 * self._intensity))
-        pen = QPen(color, thick)
-        pen.setCapStyle(Qt.RoundCap)
-        seg = perimeter * self.SEGMENT
-        pen.setDashPattern([seg / thick, (perimeter - seg) / thick])
-        pen.setDashOffset((self._phase % perimeter) / thick)
-        p.setPen(pen)
-        p.drawRoundedRect(rect, radius, radius)
+        # комета: голова яркая, хвост тает по прозрачности и толщине
+        head = self._phase % total
+        tail_px = total * self.TAIL
+        step = 9.0  # шаг сэмплирования пути, px — мельче шаг = глаже углы
+        n = max(12, int(tail_px / step))
+        points = [path.pointAtPercent((((head - i * step) % total) / total))
+                  for i in range(n)]
+        for i in range(n - 1):
+            k = 1.0 - i / n
+            alpha = int(255 * self._intensity * k ** 1.7)
+            if alpha <= 3:
+                break
+            color = QColor(self.COLOR)
+            color.setAlpha(alpha)
+            pen = QPen(color, thick * (0.35 + 0.65 * k))
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawLine(points[i], points[i + 1])
+
+        # светлое ядро на носу кометы
+        head_color = QColor(self.COLOR).lighter(135)
+        head_color.setAlpha(int(255 * self._intensity))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(head_color))
+        hr = thick * 0.7
+        p.drawEllipse(points[0], hr, hr)
 
 
 class KiraWindow(QWidget):
