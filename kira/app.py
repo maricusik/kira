@@ -18,8 +18,9 @@ import threading
 
 from PySide6.QtCore import (QEasingCurve, QObject, QParallelAnimationGroup,
                             QPoint, QPropertyAnimation, Qt, QTimer, Signal)
-from PySide6.QtGui import (QAction, QBrush, QColor, QCursor, QIcon, QPainter,
-                           QPainterPath, QPen, QPixmap, QRadialGradient)
+from PySide6.QtGui import (QAction, QBrush, QColor, QConicalGradient, QCursor,
+                           QIcon, QPainter, QPainterPath, QPen, QPixmap,
+                           QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QFrame, QLabel, QMenu,
                                QScrollArea, QSystemTrayIcon, QVBoxLayout,
                                QWidget)
@@ -223,6 +224,100 @@ class Orb(QWidget):
                       start, 100 * 16)
 
 
+# палитры свечения экрана по состояниям (переливаются по периметру)
+_GLOW_PALETTES = {
+    "listening": [(60, 190, 255), (170, 120, 255), (255, 110, 180)],
+    "thinking": [(170, 120, 255), (120, 80, 255), (255, 110, 180)],
+    "speaking": [(60, 230, 180), (60, 190, 255), (170, 120, 255)],
+}
+
+
+class ScreenGlow(QWidget):
+    """Свечение по краям всего экрана, как у Apple Intelligence.
+
+    Разгорается, когда Кира услышала имя, пульсирует от голоса, переливается
+    по периметру и гаснет после ответа. Окно прозрачно для кликов — работе
+    оно не мешает.
+    """
+
+    LAYERS = 6
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+                            | Qt.Tool | Qt.WindowTransparentForInput
+                            | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setGeometry(QApplication.primaryScreen().geometry())
+        self._phase = 0.0
+        self._level = 0.0        # сглаженная громкость голоса
+        self._target_level = 0.0
+        self._intensity = 0.0    # 0..1, плавное разгорание/угасание
+        self._target = 0.0
+        self._palette = _GLOW_PALETTES["listening"]
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def show_glow(self) -> None:
+        self._target = 1.0
+        if not self.isVisible():
+            self.setGeometry(QApplication.primaryScreen().geometry())
+            self.show()
+        self.raise_()
+        if not self._timer.isActive():
+            self._timer.start(40)
+
+    def hide_glow(self) -> None:
+        self._target = 0.0
+
+    def set_state(self, state: str) -> None:
+        if state == "idle":
+            self.hide_glow()
+        else:
+            self._palette = _GLOW_PALETTES.get(state, self._palette)
+
+    def set_level(self, level: float) -> None:
+        self._target_level = level
+
+    def _tick(self) -> None:
+        self._phase += 0.015
+        self._intensity += (self._target - self._intensity) * 0.12
+        self._level += (self._target_level - self._level) * 0.25
+        if self._target == 0.0 and self._intensity < 0.02:
+            self._timer.stop()
+            self.hide()
+            return
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        if self._intensity <= 0.01:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        rect = self.rect()
+        breath = 0.5 + 0.5 * math.sin(self._phase * 3)
+        thickness = (26 + 26 * self._level + 8 * breath) * self._intensity
+
+        colors = self._palette
+        for i in range(self.LAYERS):
+            t = i / self.LAYERS
+            alpha = int(self._intensity * (1 - t) ** 2 * 190)
+            if alpha <= 2:
+                continue
+            grad = QConicalGradient(rect.center(), -self._phase * 57)
+            n = len(colors)
+            for j, (r, g, b) in enumerate(colors + colors[:1]):
+                grad.setColorAt(j / n, QColor(r, g, b, alpha))
+            pen = QPen(QBrush(grad), max(2.0, thickness / self.LAYERS * 2.2))
+            p.setPen(pen)
+            p.setBrush(Qt.NoBrush)
+            inset = int(t * thickness)
+            radius = 18 + inset
+            p.drawRoundedRect(rect.adjusted(inset + 1, inset + 1, -inset - 1, -inset - 1),
+                              radius, radius)
+
+
 class KiraWindow(QWidget):
     """Безрамочная панель, выезжающая из-под менюбара поверх всех окон."""
 
@@ -307,6 +402,14 @@ class KiraWindow(QWidget):
         self.worker.sources.connect(self.sources_label.setText)
         self.worker.awake.connect(self.slide_in)
         self.worker.done.connect(lambda: self._hide_timer.start(self.HIDE_AFTER_MS))
+
+        # свечение по краям экрана: загорается на имя «Кира»
+        self.glow = ScreenGlow()
+        self.worker.awake.connect(self.glow.show_glow)
+        self.worker.state.connect(self.glow.set_state)
+        self.worker.level.connect(self.glow.set_level)
+        self.worker.done.connect(self.glow.hide_glow)
+
         threading.Thread(target=self.worker.run, daemon=True).start()
 
     # --- контент ----------------------------------------------------------
